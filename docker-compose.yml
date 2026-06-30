@@ -1,0 +1,86 @@
+# ============================================================================
+#  docker-compose.yml — wacrm (Next.js + Supabase)
+#
+#  This compose file runs the wacrm application and an optional PostgreSQL
+#  database for local development.
+#
+#  NOTE: The app is designed to connect to a Supabase project (either
+#  hosted at supabase.com or self-hosted via supabase/docker). The
+#  PostgreSQL service below is provided for convenience when running
+#  Supabase locally — it is NOT used directly by wacrm.
+#
+#  For full Supabase self-hosting, see:
+#    https://github.com/supabase/supabase/tree/master/docker
+#    https://supabase.com/docs/guides/hosting/overview
+# ============================================================================
+
+services:
+  # --------------------------------------------------------------------------
+  #  wacrm application
+  # --------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      args:
+        # Pass build-time vars so the Next.js build can inline them
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:3000}
+    image: wacrm:latest
+    container_name: wacrm-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # ── Required ────────────────────────────────────────────────────────
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:?error}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:?error}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:?error}
+
+      # ── Encryption & Webhooks ───────────────────────────────────────────
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?error}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+
+      # ── Optional ────────────────────────────────────────────────────────
+      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:3000}
+      AUTOMATION_CRON_SECRET: ${AUTOMATION_CRON_SECRET:-}
+      META_APP_ID: ${META_APP_ID:-}
+      ALLOWED_INVITE_HOSTS: ${ALLOWED_INVITE_HOSTS:-}
+      WHATSAPP_TEMPLATES_DRY_RUN: ${WHATSAPP_TEMPLATES_DRY_RUN:-}
+
+      # ── Runtime ─────────────────────────────────────────────────────────
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # --------------------------------------------------------------------------
+  #  PostgreSQL — OPTIONAL, for local Supabase development only.
+  #  Comment out or remove this block when connecting to a remote Supabase
+  #  project (the typical deployment pattern).
+  # --------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: wacrm-db
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: wacrm
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

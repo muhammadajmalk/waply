@@ -1,0 +1,61 @@
+# ============================================================================
+#  .dockerignore — Keep the Docker build context lean and secure
+# ============================================================================
+
+# dependencies
+node_modules
+.pnp
+.pnp.*
+.yarn/
+
+# next.js build output
+.next
+out/
+
+# production build output
+/build
+
+# testing & coverage
+coverage
+
+# environment files (contain secrets)
+.env
+.env.*
+!.env.example
+!.env.local.example
+
+# version control
+.git
+.gitignore
+.gitattributes
+.github
+.gitmodules
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE & editor
+.vscode
+.idea
+*.swp
+*.swo
+
+# debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# TypeScript
+*.tsbuildinfo
+
+# Vercel
+.vercel
+
+# documentation already included in the repo
+DOCKER.md
+README.md
+CHANGELOG.md
+CONTRIBUTING.md
+LICENSE

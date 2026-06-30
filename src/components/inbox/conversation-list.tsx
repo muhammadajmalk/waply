@@ -1,0 +1,444 @@
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { createClient } from "@/lib/supabase/client";
+import { cn } from "@/lib/utils";
+import type { Conversation, ConversationStatus, Tag, ContactTag } from "@/types";
+import { Search, ChevronDown, SlidersHorizontal } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
+import { Input } from "@/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+
+interface ConversationListProps {
+  activeConversationId: string | null;
+  onSelect: (conversation: Conversation) => void;
+  conversations: Conversation[];
+  onConversationsLoaded: (conversations: Conversation[]) => void;
+  /**
+   * Increment to force the fetch effect below to refire. The parent
+   * bumps this on realtime reconnect / tab visibility → visible so the
+   * list catches up on any events sent while the WS was disconnected
+   * or the tab was throttled. Optional so existing callers keep working.
+   */
+  resyncToken?: number;
+}
+
+const STATUS_COLORS: Record<ConversationStatus, string> = {
+  open: "bg-primary",
+  pending: "bg-amber-500",
+  closed: "bg-muted-foreground",
+};
+
+type InboxFilter = ConversationStatus | "all" | "unread";
+
+const FILTER_OPTIONS: { label: string; value: InboxFilter }[] = [
+  { label: "All", value: "all" },
+  { label: "Unread", value: "unread" },
+  { label: "Open", value: "open" },
+  { label: "Pending", value: "pending" },
+  { label: "Closed", value: "closed" },
+];
+
+export function ConversationList({
+  activeConversationId,
+  onSelect,
+  conversations,
+  onConversationsLoaded,
+  resyncToken = 0,
+}: ConversationListProps) {
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<InboxFilter>("all");
+  const [loading, setLoading] = useState(true);
+  const [allTags, setAllTags] = useState<Tag[]>([]);
+  const [contactTags, setContactTags] = useState<ContactTag[]>([]);
+  const [selectedTagIds, setSelectedTagIds] = useState<Set<string>>(new Set());
+  const [companyFilter, setCompanyFilter] = useState("");
+  const [showMoreFilters, setShowMoreFilters] = useState(false);
+
+  // Keep the latest callback in a ref so the fetch effect below can
+  // have a stable, empty-dep identity. Previously the fetch useCallback
+  // depended on `onConversationsLoaded`, which depends on the parent's
+  // `deepLinkConvId` — so every URL change (including one the parent
+  // triggered via router.replace after a click) caused a fresh
+  // conversations fetch. That extra refetch was the trigger for the
+  // deep-link auto-select running a second time and wiping the active
+  // thread's messages.
+  // Mutation lives in an effect (not render) per React 19's refs rule;
+  // the fetch runs once on mount so it's fine to read the slightly
+  // older value — the very next render updates the ref for any
+  // subsequent async completion.
+  const onConversationsLoadedRef = useRef(onConversationsLoaded);
+  useEffect(() => {
+    onConversationsLoadedRef.current = onConversationsLoaded;
+  });
+
+  useEffect(() => {
+    const supabase = createClient();
+    let cancelled = false;
+
+    (async () => {
+      const [convResult, tagsResult, ctResult] = await Promise.all([
+        supabase
+          .from("conversations")
+          .select("*, contact:contacts(*)")
+          .order("last_message_at", { ascending: false }),
+        supabase.from("tags").select("*"),
+        supabase.from("contact_tags").select("*"),
+      ]);
+
+      if (cancelled) return;
+
+      // Store tags data
+      if (tagsResult.data) setAllTags(tagsResult.data);
+      if (ctResult.data) setContactTags(ctResult.data);
+
+      // Handle conversations
+      if (convResult.error) {
+        // Supabase errors have non-enumerable properties — log fields explicitly
+        console.error("Failed to fetch conversations:", {
+          message: convResult.error.message,
+          details: convResult.error.details,
+          hint: convResult.error.hint,
+          code: convResult.error.code,
+        });
+        setLoading(false);
+        return;
+      }
+
+      onConversationsLoadedRef.current(convResult.data ?? []);
+      setLoading(false);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // `resyncToken` is included so the parent can force a refetch when
+    // the realtime channel reconnects or the tab regains focus — catches
+    // up on any events sent while the WS was disconnected or throttled.
+  }, [resyncToken]);
+
+  const filtered = useMemo(() => {
+    let result = conversations;
+
+    if (filter === "unread") {
+      result = result.filter((c) => c.unread_count > 0);
+    } else if (filter !== "all") {
+      result = result.filter((c) => c.status === filter);
+    }
+
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      result = result.filter((c) => {
+        const name = c.contact?.name?.toLowerCase() ?? "";
+        const phone = c.contact?.phone?.toLowerCase() ?? "";
+        const lastMsg = c.last_message_text?.toLowerCase() ?? "";
+        return name.includes(q) || phone.includes(q) || lastMsg.includes(q);
+      });
+    }
+
+    // Filter by company name
+    if (companyFilter.trim()) {
+      const q = companyFilter.toLowerCase();
+      result = result.filter((c) => {
+        const company = c.contact?.company?.toLowerCase() ?? "";
+        return company.includes(q);
+      });
+    }
+
+    // Filter by selected contact tags
+    if (selectedTagIds.size > 0) {
+      const contactIdsWithTags = new Set(
+        contactTags
+          .filter((ct) => selectedTagIds.has(ct.tag_id))
+          .map((ct) => ct.contact_id)
+      );
+      result = result.filter((c) => contactIdsWithTags.has(c.contact_id));
+    }
+
+    return result;
+  }, [conversations, filter, search, companyFilter, selectedTagIds, contactTags]);
+
+  const handleSearchChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      setSearch(e.target.value);
+    },
+    []
+  );
+
+  const handleSelect = useCallback(
+    (conv: Conversation) => {
+      onSelect(conv);
+    },
+    [onSelect]
+  );
+
+  const activeFilter = FILTER_OPTIONS.find((o) => o.value === filter);
+
+  return (
+    // w-full on mobile so the list occupies the whole viewport when it's
+    // the single pane showing; fixed 320px on desktop where it shares the
+    // row with the thread + contact sidebar.
+    <div className="flex h-full w-full flex-col border-r border-border bg-card lg:w-80">
+      {/* Search + Filter */}
+      <div className="space-y-2 border-b border-border p-3">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={handleSearchChange}
+            placeholder="Search conversations..."
+            className="border-border bg-muted pl-9 text-sm text-foreground placeholder-muted-foreground focus:border-primary/50"
+          />
+        </div>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger className="inline-flex items-center justify-center h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground rounded-md hover:bg-muted">
+              {activeFilter?.label ?? "All"}
+              <ChevronDown className="h-3 w-3" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="start"
+            className="border-border bg-popover"
+          >
+            {FILTER_OPTIONS.map((opt) => (
+              <DropdownMenuItem
+                key={opt.value}
+                onClick={() => setFilter(opt.value)}
+                className={cn(
+                  "text-sm",
+                  filter === opt.value
+                    ? "text-primary"
+                    : "text-popover-foreground"
+                )}
+              >
+                {opt.label}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        {/* More Filters Toggle */}
+        <button
+          onClick={() => setShowMoreFilters((v) => !v)}
+          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+        >
+          <SlidersHorizontal className="h-3 w-3" />
+          <span>More filters</span>
+          <ChevronDown
+            className={cn(
+              "h-3 w-3 transition-transform",
+              showMoreFilters && "rotate-180"
+            )}
+          />
+          {(selectedTagIds.size > 0 || companyFilter.trim()) && (
+            <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">
+              {selectedTagIds.size + (companyFilter.trim() ? 1 : 0)}
+            </Badge>
+          )}
+        </button>
+
+        {showMoreFilters && (
+          <div className="space-y-3 pt-1">
+            <Separator />
+
+            {/* Tags multi-select */}
+            <div className="space-y-1.5">
+              <label className="text-xs text-muted-foreground">Contact tags</label>
+              <Popover>
+                <PopoverTrigger className="inline-flex h-7 w-full items-center justify-between gap-1 rounded-md border border-border bg-muted px-2 text-xs text-foreground hover:bg-muted/80">
+                  <span className="truncate">
+                    {selectedTagIds.size === 0
+                      ? "Select tags..."
+                      : `${selectedTagIds.size} tag${selectedTagIds.size === 1 ? "" : "s"} selected`}
+                  </span>
+                  <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+                </PopoverTrigger>
+                <PopoverContent
+                  className="w-56 p-2"
+                  align="start"
+                  sideOffset={4}
+                >
+                  {allTags.length === 0 ? (
+                    <p className="px-1 py-2 text-xs text-muted-foreground">
+                      No tags found
+                    </p>
+                  ) : (
+                    <div className="space-y-0.5">
+                      {allTags.map((tag) => (
+                        <label
+                          key={tag.id}
+                          className="flex cursor-pointer items-center gap-2 rounded px-1 py-1.5 hover:bg-muted"
+                        >
+                          <Checkbox
+                            checked={selectedTagIds.has(tag.id)}
+                            onCheckedChange={() => {
+                              const next = new Set(selectedTagIds);
+                              if (next.has(tag.id)) {
+                                next.delete(tag.id);
+                              } else {
+                                next.add(tag.id);
+                              }
+                              setSelectedTagIds(next);
+                            }}
+                          />
+                          {tag.color && (
+                            <span
+                              className="h-2.5 w-2.5 shrink-0 rounded-full"
+                              style={{ backgroundColor: tag.color }}
+                            />
+                          )}
+                          <span className="text-sm text-foreground">
+                            {tag.name}
+                          </span>
+                        </label>
+                      ))}
+                      {selectedTagIds.size > 0 && (
+                        <button
+                          onClick={() => setSelectedTagIds(new Set())}
+                          className="mt-1 w-full rounded px-1 py-1 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                        >
+                          Clear all
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </PopoverContent>
+              </Popover>
+            </div>
+
+            {/* Company text filter */}
+            <div className="space-y-1.5">
+              <label className="text-xs text-muted-foreground">Company</label>
+              <Input
+                value={companyFilter}
+                onChange={(e) => setCompanyFilter(e.target.value)}
+                placeholder="Filter by company..."
+                className="border-border bg-muted text-sm text-foreground placeholder-muted-foreground h-7 text-xs"
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Conversation Items.
+          `min-h-0` is load-bearing: a flex child defaults to
+          min-height:auto, so without it this ScrollArea grows to fit
+          every conversation instead of shrinking to the remaining
+          space — the list then overflows and gets clipped by the
+          parent's overflow-hidden with no scrollbar (issue #229). */}
+      <ScrollArea className="min-h-0 flex-1">
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="px-4 py-12 text-center">
+            <p className="text-sm text-muted-foreground">No conversations found</p>
+          </div>
+        ) : (
+          <div className="flex flex-col">
+            {filtered.map((conv) => (
+              <ConversationItem
+                key={conv.id}
+                conversation={conv}
+                isActive={conv.id === activeConversationId}
+                onSelect={handleSelect}
+              />
+            ))}
+          </div>
+        )}
+      </ScrollArea>
+    </div>
+  );
+}
+
+interface ConversationItemProps {
+  conversation: Conversation;
+  isActive: boolean;
+  onSelect: (conversation: Conversation) => void;
+}
+
+function ConversationItem({
+  conversation,
+  isActive,
+  onSelect,
+}: ConversationItemProps) {
+  const contact = conversation.contact;
+  const displayName = contact?.name || contact?.phone || "Unknown";
+  const initials = displayName.charAt(0).toUpperCase();
+
+  const handleClick = useCallback(() => {
+    onSelect(conversation);
+  }, [onSelect, conversation]);
+
+  const timeAgo = conversation.last_message_at
+    ? formatDistanceToNow(new Date(conversation.last_message_at), {
+        addSuffix: false,
+      })
+    : "";
+
+  return (
+    <button
+      onClick={handleClick}
+      className={cn(
+        "flex w-full items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-muted/50",
+        isActive && "border-l-2 border-primary bg-muted/70"
+      )}
+    >
+      {/* Avatar */}
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground">
+        {contact?.avatar_url ? (
+          <img
+            src={contact.avatar_url}
+            alt={displayName}
+            className="h-10 w-10 rounded-full object-cover"
+          />
+        ) : (
+          initials
+        )}
+      </div>
+
+      {/* Content */}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-2">
+          <span className="truncate text-sm font-medium text-foreground">
+            {displayName}
+          </span>
+          <span className="shrink-0 text-[10px] text-muted-foreground">{timeAgo}</span>
+        </div>
+        <div className="mt-0.5 flex items-center justify-between gap-2">
+          <p className="truncate text-xs text-muted-foreground">
+            {conversation.last_message_text || "No messages yet"}
+          </p>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {conversation.unread_count > 0 && (
+              <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground">
+                {conversation.unread_count}
+              </span>
+            )}
+            <span
+              className={cn(
+                "h-2 w-2 rounded-full",
+                STATUS_COLORS[conversation.status]
+              )}
+              title={conversation.status}
+            />
+          </div>
+        </div>
+      </div>
+    </button>
+  );
+}
