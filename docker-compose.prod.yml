@@ -3,20 +3,14 @@
 #  Subdomain: waply.muhammad-ajmal.com
 #  Server IP: 153.75.248.77
 #
-#  Services:
-#    - app      : wacrm Next.js application (port 3000, internal only)
-#    - nginx    : Reverse proxy with SSL termination (ports 80, 443)
-#    - certbot  : Automatic SSL certificate renewal via Let's Encrypt
+#  SSL is handled by laservect-caddy (shared VPS proxy)
+#  This file only runs the Next.js app on port 3001
 #
 #  Usage:
 #    docker compose -f docker-compose.prod.yml up -d
 # ============================================================================
 
 services:
-  # --------------------------------------------------------------------------
-  #  wacrm Next.js Application
-  #  Runs on internal port 3000 — NOT exposed to internet directly
-  # --------------------------------------------------------------------------
   app:
     build:
       context: .
@@ -27,89 +21,30 @@ services:
     image: wacrm:prod
     container_name: wacrm-app
     restart: unless-stopped
-    # Note: No external port mapping — nginx proxies requests internally
-    expose:
-      - "3000"
+    ports:
+      - "3001:3000"
     environment:
-      # ── Required ──────────────────────────────────────────────────────────
       NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:?NEXT_PUBLIC_SUPABASE_URL is required}
       NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:?NEXT_PUBLIC_SUPABASE_ANON_KEY is required}
       SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:?SUPABASE_SERVICE_ROLE_KEY is required}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
-      META_APP_SECRET: ${META_APP_SECRET}
-
-      # ── Recommended ───────────────────────────────────────────────────────
+      META_APP_SECRET: ${META_APP_SECRET:-}
       NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-https://waply.muhammad-ajmal.com}
-
-      # ── Optional ──────────────────────────────────────────────────────────
       AUTOMATION_CRON_SECRET: ${AUTOMATION_CRON_SECRET:-}
       META_APP_ID: ${META_APP_ID:-}
       ALLOWED_INVITE_HOSTS: ${ALLOWED_INVITE_HOSTS:-waply.muhammad-ajmal.com}
       WHATSAPP_TEMPLATES_DRY_RUN: ${WHATSAPP_TEMPLATES_DRY_RUN:-false}
-
-      # ── Runtime ───────────────────────────────────────────────────────────
       NODE_ENV: production
       PORT: "3000"
       HOSTNAME: "0.0.0.0"
-    networks:
-      - wacrm-network
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 20s
+      start_period: 40s
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-
-  # --------------------------------------------------------------------------
-  #  Nginx Reverse Proxy + SSL (via Certbot/Let's Encrypt)
-  # --------------------------------------------------------------------------
-  nginx:
-    image: nginx:alpine
-    container_name: wacrm-nginx
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/conf.d:/etc/nginx/conf.d:ro
-      - certbot-webroot:/var/www/certbot:ro
-      - certbot-certs:/etc/letsencrypt:ro
-    networks:
-      - wacrm-network
-    depends_on:
-      - app
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "5m"
-        max-file: "3"
-
-  # --------------------------------------------------------------------------
-  #  Certbot — SSL Certificate Auto-Renewal (Let's Encrypt)
-  # --------------------------------------------------------------------------
-  certbot:
-    image: certbot/certbot:latest
-    container_name: wacrm-certbot
-    volumes:
-      - certbot-webroot:/var/www/certbot
-      - certbot-certs:/etc/letsencrypt
-    entrypoint: /bin/sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done"
-
-# --------------------------------------------------------------------------
-#  Networks
-# --------------------------------------------------------------------------
-networks:
-  wacrm-network:
-    driver: bridge
-
-# --------------------------------------------------------------------------
-#  Volumes
-# --------------------------------------------------------------------------
-volumes:
-  certbot-webroot:
-  certbot-certs:
