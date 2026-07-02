@@ -4,17 +4,7 @@
 # ============================================================================
 
 # ---------------------------------------------------------------------------
-# Stage 1: Production dependencies
-# ---------------------------------------------------------------------------
-FROM node:20-alpine AS deps
-WORKDIR /app
-
-# Copy lock files first for layer caching
-COPY package*.json ./
-RUN npm ci --only=production && npm cache clean --force
-
-# ---------------------------------------------------------------------------
-# Stage 2: Build the application
+# Stage 1: Build the application
 # ---------------------------------------------------------------------------
 FROM node:20-alpine AS builder
 WORKDIR /app
@@ -38,7 +28,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 # ---------------------------------------------------------------------------
-# Stage 3: Production runner (minimal image)
+# Stage 2: Production runner (minimal image)
 # ---------------------------------------------------------------------------
 FROM node:20-alpine AS runner
 WORKDIR /app
